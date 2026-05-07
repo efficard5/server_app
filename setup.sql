@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS drive_docs (
     url TEXT,        -- External link
     note TEXT,
     type TEXT,       -- 'file' or 'url'
+    uploaded_by TEXT, -- User who uploaded the file
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(project, topic, file_name)

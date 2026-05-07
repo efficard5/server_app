@@ -9,6 +9,7 @@ import uuid
 from services.task_service import aggregate_topic_completion
 
 from services.milestone_service import get_planned_topic_adjustments
+from services.storage_service import save_file_to_server, add_link_to_server, get_files_for_topic, remove_file
 
 
 def render(ctx: dict) -> None:
@@ -20,16 +21,8 @@ def render(ctx: dict) -> None:
     
     # --- UI Component: Topic Files Helper ---
     def render_topic_files(t_proj, t_topic, btn_key=""):
-        topic_dir = f"data/topic_files/{t_proj}/{t_topic}"
-        meta_path = os.path.join(topic_dir, ".metadata.json")
-        
-        # Load metadata
-        topic_meta = {}
-        if os.path.exists(meta_path):
-            try:
-                with open(meta_path, "r") as mf:
-                    topic_meta = json.load(mf)
-            except: pass
+        current_user = st.session_state.get("auth_name", "Unknown")
+        is_admin = st.session_state.get("role") == "Admin"
 
         with st.popover("📂 Topic Files", use_container_width=True):
             st.markdown(f"**Files & Links for {t_topic}**")
@@ -42,48 +35,54 @@ def render(ctx: dict) -> None:
                 up_file = st.file_uploader("Upload Document", key=f"upfile_{btn_key}_{t_topic}")
                 if st.button("💾 Save File", key=f"btn_up_{btn_key}_{t_topic}", use_container_width=True):
                     if up_file:
-                        os.makedirs(topic_dir, exist_ok=True)
-                        save_path = os.path.join(topic_dir, up_file.name)
-                        with open(save_path, "wb") as f:
-                            f.write(up_file.getbuffer())
-                        
-                        if "files" not in topic_meta: topic_meta["files"] = {}
-                        topic_meta["files"][up_file.name] = {"note": up_note}
-                        with open(meta_path, "w") as mf: json.dump(topic_meta, mf, indent=4)
-                        st.success("File saved locally!")
-                        st.rerun()
+                        success, error = save_file_to_server(
+                            up_file, t_proj, t_topic, 
+                            note=up_note, 
+                            uploaded_by=current_user
+                        )
+                        if success:
+                            st.success("File saved to Server Storage!")
+                            st.rerun()
+                        else:
+                            st.error(f"Upload failed: {error}")
             else:
                 up_link = st.text_input("URL Link", key=f"uplink_{btn_key}_{t_topic}")
                 if st.button("🔗 Add Link", key=f"btn_link_{btn_key}_{t_topic}", use_container_width=True):
                     if up_link:
-                        os.makedirs(topic_dir, exist_ok=True)
-                        if "links" not in topic_meta: topic_meta["links"] = {}
-                        link_id = str(uuid.uuid4())
-                        topic_meta["links"][link_id] = {"url": up_link, "note": up_note}
-                        with open(meta_path, "w") as mf: json.dump(topic_meta, mf, indent=4)
-                        st.success("Link added!")
-                        st.rerun()
+                        success, error = add_link_to_server(t_proj, t_topic, up_link, note=up_note)
+                        if success:
+                            st.success("Link added!")
+                            st.rerun()
+                        else:
+                            st.error(f"Failed to add link: {error}")
 
             st.divider()
-            # 2. List Section
-            files_to_show = []
-            if os.path.exists(topic_dir):
-                files_to_show = [f for f in os.listdir(topic_dir) if f != ".metadata.json"]
-            
-            links_to_show = topic_meta.get("links", {})
+            # 2. List Section (From DB)
+            user_filter = None if is_admin else current_user
+            all_items = get_files_for_topic(t_proj, t_topic, user_filter=user_filter)
 
-            if files_to_show:
-                st.markdown("**Attached Files**")
-                for f_name in files_to_show:
-                    f_info = topic_meta.get("files", {}).get(f_name, {})
-                    st.markdown(f"📄 {f_name} " + (f"(*{f_info.get('note')}*)" if f_info.get('note') else ""))
-            
-            if links_to_show:
-                st.markdown("**Attached Links**")
-                for l_id, l_info in links_to_show.items():
-                    st.markdown(f"🔗 [{l_info.get('url')}]({l_info.get('url')}) " + (f"(*{l_info.get('note')}*)" if l_info.get('note') else ""))
+            if all_items:
+                for item in all_items:
+                    # item: (id, file_name, local_path, url, note, type, uploaded_by)
+                    i_id, i_name, i_path, i_url, i_note, i_type, i_owner = item
+                    
+                    col_file, col_del = st.columns([4, 1])
+                    with col_file:
+                        label = f"{'📄' if i_type == 'File' else '🔗'} {i_name}"
+                        if i_note: label += f" (*{i_note}*)"
+                        
+                        if i_type == "Link":
+                            st.markdown(f"[{label}]({i_url})")
+                        else:
+                            st.markdown(f"**{label}**")
+                            st.caption(f"Owner: {i_owner}")
+                    
+                    with col_del:
+                        if st.button("🗑️", key=f"del_{btn_key}_{i_id}"):
+                            if remove_file(i_id, i_path):
+                                st.rerun()
 
-            if not files_to_show and not links_to_show:
+            else:
                 st.info("No files or links yet.")
 
     
