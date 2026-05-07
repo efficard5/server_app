@@ -3,7 +3,13 @@ import streamlit as st
 import plotly.graph_objects as go
 import plotly.express as px
 import pandas as pd
+import os
+import json
+import uuid
 from services.task_service import aggregate_topic_completion
+
+from services.milestone_service import get_planned_topic_adjustments
+
 
 def render(ctx: dict) -> None:
     df = ctx["df"]
@@ -11,6 +17,75 @@ def render(ctx: dict) -> None:
     registry = ctx["registry"]
     
     st.title("📊 R&D Project Overview & Analytics")
+    
+    # --- UI Component: Topic Files Helper ---
+    def render_topic_files(t_proj, t_topic, btn_key=""):
+        topic_dir = f"data/topic_files/{t_proj}/{t_topic}"
+        meta_path = os.path.join(topic_dir, ".metadata.json")
+        
+        # Load metadata
+        topic_meta = {}
+        if os.path.exists(meta_path):
+            try:
+                with open(meta_path, "r") as mf:
+                    topic_meta = json.load(mf)
+            except: pass
+
+        with st.popover("📂 Topic Files", use_container_width=True):
+            st.markdown(f"**Files & Links for {t_topic}**")
+            
+            # 1. Upload/Add Section
+            up_type = st.radio("Type", ["File", "Link"], horizontal=True, key=f"uptype_{btn_key}_{t_topic}")
+            up_note = st.text_input("Note (Optional)", key=f"upnote_{btn_key}_{t_topic}")
+            
+            if up_type == "File":
+                up_file = st.file_uploader("Upload Document", key=f"upfile_{btn_key}_{t_topic}")
+                if st.button("💾 Save File", key=f"btn_up_{btn_key}_{t_topic}", use_container_width=True):
+                    if up_file:
+                        os.makedirs(topic_dir, exist_ok=True)
+                        save_path = os.path.join(topic_dir, up_file.name)
+                        with open(save_path, "wb") as f:
+                            f.write(up_file.getbuffer())
+                        
+                        if "files" not in topic_meta: topic_meta["files"] = {}
+                        topic_meta["files"][up_file.name] = {"note": up_note}
+                        with open(meta_path, "w") as mf: json.dump(topic_meta, mf, indent=4)
+                        st.success("File saved locally!")
+                        st.rerun()
+            else:
+                up_link = st.text_input("URL Link", key=f"uplink_{btn_key}_{t_topic}")
+                if st.button("🔗 Add Link", key=f"btn_link_{btn_key}_{t_topic}", use_container_width=True):
+                    if up_link:
+                        os.makedirs(topic_dir, exist_ok=True)
+                        if "links" not in topic_meta: topic_meta["links"] = {}
+                        link_id = str(uuid.uuid4())
+                        topic_meta["links"][link_id] = {"url": up_link, "note": up_note}
+                        with open(meta_path, "w") as mf: json.dump(topic_meta, mf, indent=4)
+                        st.success("Link added!")
+                        st.rerun()
+
+            st.divider()
+            # 2. List Section
+            files_to_show = []
+            if os.path.exists(topic_dir):
+                files_to_show = [f for f in os.listdir(topic_dir) if f != ".metadata.json"]
+            
+            links_to_show = topic_meta.get("links", {})
+
+            if files_to_show:
+                st.markdown("**Attached Files**")
+                for f_name in files_to_show:
+                    f_info = topic_meta.get("files", {}).get(f_name, {})
+                    st.markdown(f"📄 {f_name} " + (f"(*{f_info.get('note')}*)" if f_info.get('note') else ""))
+            
+            if links_to_show:
+                st.markdown("**Attached Links**")
+                for l_id, l_info in links_to_show.items():
+                    st.markdown(f"🔗 [{l_info.get('url')}]({l_info.get('url')}) " + (f"(*{l_info.get('note')}*)" if l_info.get('note') else ""))
+
+            if not files_to_show and not links_to_show:
+                st.info("No files or links yet.")
+
     
     # 1. Project Selection
     if not projects:
@@ -38,13 +113,21 @@ def render(ctx: dict) -> None:
     st.subheader(f"Dashboard » {selected_project}")
 
     # 3. TOP GAUGES (Matching Original UI)
+    milestones = ctx.get("milestones", {})
+    milestone_adjustments = get_planned_topic_adjustments(selected_project, milestones, proj_topics)
+    
     cols = st.columns(max(len(proj_topics), 1))
     for i, topic in enumerate(proj_topics):
         topic_tasks = proj_df[proj_df["topic"] == topic]
-        avg_comp = aggregate_topic_completion(topic_tasks)
+        base_comp = aggregate_topic_completion(topic_tasks)
+        milestone_comp = milestone_adjustments.get(topic, 0.0)
+        
+        # Combine Task Progress + Milestone Progress (capped at 100)
+        avg_comp = min(100.0, base_comp + milestone_comp)
+
 
         with cols[i]:
-            # Circular Gauge
+            # Circular Gauge (Half-rounded style)
             fig = go.Figure(go.Indicator(
                 mode="gauge+number",
                 value=avg_comp,
@@ -54,11 +137,16 @@ def render(ctx: dict) -> None:
                     'bar': {'color': "#2ecc71"},
                     'bgcolor': "white",
                     'borderwidth': 2,
-                    'bordercolor': "#e0e0e0"
+                    'bordercolor': "#e0e0e0",
+                    'shape': 'angular' # Default angular for the classic half-circle look
                 }
             ))
-            fig.update_layout(height=200, margin=dict(l=10, r=10, t=40, b=10))
+            fig.update_layout(height=180, margin=dict(l=20, r=20, t=50, b=0))
             st.plotly_chart(fig, use_container_width=True)
+            
+            # Topic Files Button
+            render_topic_files(selected_project, topic, btn_key="gauge")
+
 
     st.divider()
 
@@ -69,9 +157,13 @@ def render(ctx: dict) -> None:
         prog_rows = []
         for topic in proj_topics:
             t_df = proj_df[proj_df["topic"] == topic]
-            prog_rows.append({"topic": topic, "completion_pct": aggregate_topic_completion(t_df)})
+            base_comp = aggregate_topic_completion(t_df)
+            milestone_comp = milestone_adjustments.get(topic, 0.0)
+            avg_comp = min(100.0, base_comp + milestone_comp)
+            prog_rows.append({"topic": topic, "completion_pct": avg_comp})
         
         prog_df = pd.DataFrame(prog_rows)
+
         fig_bar = px.bar(
             prog_df, 
             y="topic", 
@@ -114,7 +206,10 @@ def render(ctx: dict) -> None:
 
     col_l, col_r = st.columns([3, 1])
     with col_l:
-        st.markdown("**Topic Context Library**")
+        ctx_header_l, ctx_header_r = st.columns([2, 1])
+        ctx_header_l.markdown("**Topic Context Library**")
+        expand_all = ctx_header_r.toggle("Unfold All Topic Details", value=False)
+        
         for i in range(0, len(proj_topics), 3):
             grid_cols = st.columns(3)
             for j, topic in enumerate(proj_topics[i:i+3]):
@@ -135,17 +230,13 @@ def render(ctx: dict) -> None:
                             "Future": new_fut
                         })
                     else:
-                        maj_html = format_bullet_html(tn.get("Major", ""))
-                        prob_html = format_bullet_html(tn.get("Problematic", ""))
-                        fut_html = format_bullet_html(tn.get("Future", ""))
-                        st.markdown(f"""
-                        <div class="card">
-                            <h4 style='margin-bottom:10px;'>📦 {topic}</h4>
-                            <p style='margin-bottom:2px;'><b>Completed:</b></p>{maj_html}
-                            <p style='margin-bottom:2px;'><b>In Progress:</b></p>{prob_html}
-                            <p style='margin-bottom:2px;'><b>Future:</b></p>{fut_html}
-                        </div>
-                        """, unsafe_allow_html=True)
+                        with st.expander(f"📦 {topic}", expanded=expand_all):
+                            maj_html = format_bullet_html(tn.get("Major", ""))
+                            prob_html = format_bullet_html(tn.get("Problematic", ""))
+                            fut_html = format_bullet_html(tn.get("Future", ""))
+                            st.markdown(f"**Completed:**{maj_html}", unsafe_allow_html=True)
+                            st.markdown(f"**In Progress:**{prob_html}", unsafe_allow_html=True)
+                            st.markdown(f"**Future:**{fut_html}", unsafe_allow_html=True)
 
     with col_r:
         if edit_notes:
@@ -162,7 +253,7 @@ def render(ctx: dict) -> None:
                 time.sleep(0.5)
                 st.rerun()
         else:
-            st.markdown("#### ⚠️ Project Issues")
-            st.markdown(format_bullet_markdown(proj_notes.get("Project_Issues", "")))
-            st.markdown("#### 🚀 Further Plans")
-            st.markdown(format_bullet_markdown(proj_notes.get("Project_Plans", "")))
+            with st.expander("⚠️ Project Issues", expanded=False):
+                st.markdown(format_bullet_markdown(proj_notes.get("Project_Issues", "")))
+            with st.expander("🚀 Further Plans", expanded=False):
+                st.markdown(format_bullet_markdown(proj_notes.get("Project_Plans", "")))
