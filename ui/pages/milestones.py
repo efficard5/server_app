@@ -99,6 +99,7 @@ def render(ctx: dict) -> None:
             if not new_m_name:
                 st.error("Please enter a milestone name.")
             else:
+                now_iso = datetime.now().isoformat()
                 new_mil = {
                     "project_context": new_m_project,
                     "name": new_m_name,
@@ -108,6 +109,8 @@ def render(ctx: dict) -> None:
                     "to_date": new_m_end.strftime("%Y-%m-%d"),
                     "completed": False,
                     "progress_increase": nm_topic_increases,
+                    "created_at": now_iso,
+                    "updated_at": now_iso,
                     "tasks": {}
                 }
                 save_single_milestone(new_m_name, new_mil)
@@ -119,20 +122,36 @@ def render(ctx: dict) -> None:
     # --- 3. MILESTONE LIST ---
     st.subheader("📋 Active Milestones")
     
-    active_mils = {mid: info for mid, info in milestones.items() if not info.get("completed", False)}
-    completed_mils = {mid: info for mid, info in milestones.items() if info.get("completed", False)}
+    # Sort milestones by latest activity (creation or update)
+    def get_sort_key(item):
+        info = item[1]
+        c = info.get("created_at", "1970-01-01T00:00:00")
+        u = info.get("updated_at", c)
+        return max(c, u)
+
+    active_mils = sorted(
+        [(mid, info) for mid, info in milestones.items() if not info.get("completed", False)],
+        key=get_sort_key,
+        reverse=True
+    )
+    completed_mils = sorted(
+        [(mid, info) for mid, info in milestones.items() if info.get("completed", False)],
+        key=get_sort_key,
+        reverse=True
+    )
 
     if not active_mils and not completed_mils:
         st.info("No milestones found.")
         return
 
-    for mid, info in active_mils.items():
+    for mid, info in active_mils:
         with st.container():
             h1, h2, h3, h4 = st.columns([5, 1.2, 0.9, 0.9])
             h1.markdown(f"### {mid}")
             
             if h2.checkbox("Completed", value=False, key=f"done_{mid}"):
                 info["completed"] = True
+                info["updated_at"] = datetime.now().isoformat()
                 save_single_milestone(mid, info)
                 st.rerun()
             
@@ -171,7 +190,8 @@ def render(ctx: dict) -> None:
                             "time_needed": e_time,
                             "from_date": e_start.strftime("%Y-%m-%d"),
                             "to_date": e_end.strftime("%Y-%m-%d"),
-                            "description": e_desc
+                            "description": e_desc,
+                            "updated_at": datetime.now().isoformat()
                         })
                         # If name changed, delete old and save new
                         if e_name != mid:
@@ -210,6 +230,7 @@ def render(ctx: dict) -> None:
                         save_col1, save_col2 = st.columns(2)
                         if save_col1.button("💾 Save Progress", key=f"save_inc_{mid}"):
                             info["progress_increase"] = updated_inc
+                            info["updated_at"] = datetime.now().isoformat()
                             save_single_milestone(mid, info)
                             st.session_state[edit_inc_key] = False
                             st.rerun()
@@ -232,19 +253,26 @@ def render(ctx: dict) -> None:
                                 with st.form(key=f"form_edit_task_{t_id}"):
                                     et_name = st.text_input("Task Name", value=t_info.get("name"))
                                     et_desc = st.text_area("Task Description", value=t_info.get("description"))
-                                    etc1, etc2 = st.columns(2)
-                                    et_start = etc1.date_input("Start Date", value=datetime.strptime(t_info.get("start_date", "2024-01-01"), "%Y-%m-%d"))
-                                    et_end = etc2.date_input("End Date", value=datetime.strptime(t_info.get("end_date", "2024-01-01"), "%Y-%m-%d"))
+                                    etc1, etc2, etc3 = st.columns(3)
+                                    et_start = etc1.date_input("Start Date", value=datetime.strptime(t_info.get("start_date", "2024-01-01"), "%Y-%m-%d"), key=f"ets_{t_id}")
+                                    et_end = etc2.date_input("End Date", value=datetime.strptime(t_info.get("end_date", "2024-01-01"), "%Y-%m-%d"), key=f"ete_{t_id}")
                                     
+                                    proj_topics = ctx["registry"].get(info["project_context"], [])
+                                    t_idx = proj_topics.index(t_info.get("topic")) if t_info.get("topic") in proj_topics else 0
+                                    et_topic = etc3.selectbox("Topic", proj_topics, index=t_idx, key=f"ett_{t_id}")
+
                                     f_col1, f_col2 = st.columns(2)
                                     if f_col1.form_submit_button("💾 Update Task"):
                                         info["tasks"][t_id] = {
                                             "name": et_name,
                                             "description": et_desc,
+                                            "topic": et_topic,
+                                            "completed": t_info.get("completed", False),
                                             "start_date": et_start.strftime("%Y-%m-%d"),
                                             "end_date": et_end.strftime("%Y-%m-%d"),
                                             "errors": t_info.get("errors", {})
                                         }
+                                        info["updated_at"] = datetime.now().isoformat()
                                         save_single_milestone(mid, info)
                                         st.session_state[edit_task_key] = False
                                         st.rerun()
@@ -252,98 +280,178 @@ def render(ctx: dict) -> None:
                                         st.session_state[edit_task_key] = False
                                         st.rerun()
                             else:
-                                tc1, tc2, tc3 = st.columns([8, 1, 1])
-                                tc1.markdown(f"**{t_info.get('name')}** ({t_info.get('start_date')} to {t_info.get('end_date')})")
-                                if tc2.button("✏️", key=f"btn_edit_t_{t_id}"):
+                                tc1, tc2, tc3, tc4 = st.columns([6, 2, 1, 1])
+                                is_done = tc2.checkbox("Done", value=t_info.get("completed", False), key=f"tdone_{t_id}")
+                                if is_done != t_info.get("completed", False):
+                                    info["tasks"][t_id]["completed"] = is_done
+                                    info["updated_at"] = datetime.now().isoformat()
+                                    save_single_milestone(mid, info)
+                                    st.rerun()
+
+                                t_label = f"**{t_info.get('name')}**"
+                                if t_info.get("topic"):
+                                    t_label += f" ({t_info.get('topic')})"
+                                tc1.markdown(f"{t_label}  \n*{t_info.get('start_date')} to {t_info.get('end_date')}*")
+                                
+                                if tc3.button("✏️", key=f"btn_edit_t_{t_id}"):
                                     st.session_state[edit_task_key] = True
                                     st.rerun()
-                                if tc3.button("🗑️", key=f"btn_del_t_{t_id}"):
+                                if tc4.button("🗑️", key=f"btn_del_t_{t_id}"):
                                     del info["tasks"][t_id]
+                                    info["updated_at"] = datetime.now().isoformat()
                                     save_single_milestone(mid, info)
                                     st.rerun()
                                 
                                 if t_info.get('description'):
                                     st.caption(t_info.get('description'))
                             
-                            t_errors = t_info.get("errors", {})
-                            if t_errors:
-                                for e_id, e_info in t_errors.items():
-                                    ec1, ec2 = st.columns([10, 1])
-                                    ec1.markdown(f"> ⚠️ **{e_info.get('error_name')}**: {e_info.get('description')}  \n> *(Time impact: {e_info.get('time_variance')} hrs | Checkpoint: {e_info.get('checkpoint')})*")
-                                    if ec2.button("🗑️", key=f"btn_del_e_{e_id}", help="Delete Issue"):
-                                        del info["tasks"][t_id]["errors"][e_id]
-                                        save_single_milestone(mid, info)
-                                        st.rerun()
+                            # ── Error Display (Moved to milestone level) ──
                             st.divider()
                     else:
                         st.info("No tasks added yet.")
                     
-                    st.markdown("**Add New Task**")
-                    with st.form(key=f"form_add_task_{mid}"):
-                        t_name = st.text_input("Task Name")
-                        t_desc = st.text_area("Task Description")
-                        tc1, tc2 = st.columns(2)
-                        t_start = tc1.date_input("Start Date")
-                        t_end = tc2.date_input("End Date")
-                        if st.form_submit_button("💾 Save Task", use_container_width=True):
-                            if t_name:
-                                new_t_id = str(uuid.uuid4())
-                                if "tasks" not in info: info["tasks"] = {}
-                                info["tasks"][new_t_id] = {
-                                    "name": t_name,
-                                    "description": t_desc,
-                                    "start_date": t_start.strftime("%Y-%m-%d"),
-                                    "end_date": t_end.strftime("%Y-%m-%d"),
-                                    "errors": {}
-                                }
-                                save_single_milestone(mid, info)
-                                st.rerun()
-                            else:
-                                st.error("Task Name is required.")
-
-                # ── Add Error to Task ──
-                with st.expander("⚠️ Add Error / Issue to Task", expanded=False):
-                    if not m_tasks:
-                        st.warning("Please add a task first before adding an error.")
-                    else:
-                        with st.form(key=f"form_add_error_{mid}"):
-                            # Sort tasks by date for the selection dropdown
-                            sorted_task_list = sorted(m_tasks.items(), key=lambda x: x[1].get("start_date", ""))
-                            task_options = {t_info["name"]: t_id for t_id, t_info in sorted_task_list}
-                            sel_task_name = st.selectbox("Select Task", list(task_options.keys()))
+                    with st.expander("➕ Add New Task", expanded=False):
+                        with st.form(key=f"form_add_task_{mid}"):
+                            t_name = st.text_input("Task Name")
+                            t_desc = st.text_area("Task Description")
+                            tc1, tc2, tc3 = st.columns(3)
+                            t_start = tc1.date_input("Start Date")
+                            t_end = tc2.date_input("End Date")
                             
-                            e_name = st.text_input("Error / Issue Name")
-                            e_desc = st.text_area("Description")
-                            ec1, ec2 = st.columns(2)
-                            e_time = ec1.text_input("Time May Vary (e.g., +2 Hrs)", value="0")
-                            e_check = ec2.text_input("Check Point")
+                            proj_topics = ctx["registry"].get(info["project_context"], [])
+                            t_topic = tc3.selectbox("Topic", proj_topics)
                             
-                            if st.form_submit_button("💾 Save Error", use_container_width=True):
-                                if e_name and sel_task_name:
-                                    t_id = task_options[sel_task_name]
-                                    new_e_id = str(uuid.uuid4())
-                                    if "errors" not in info["tasks"][t_id]:
-                                        info["tasks"][t_id]["errors"] = {}
-                                    info["tasks"][t_id]["errors"][new_e_id] = {
-                                        "error_name": e_name,
-                                        "description": e_desc,
-                                        "time_variance": e_time,
-                                        "checkpoint": e_check
+                            if st.form_submit_button("💾 Save Task", use_container_width=True):
+                                if t_name:
+                                    new_t_id = str(uuid.uuid4())
+                                    if "tasks" not in info: info["tasks"] = {}
+                                    info["tasks"][new_t_id] = {
+                                        "name": t_name,
+                                        "description": t_desc,
+                                        "topic": t_topic,
+                                        "completed": False,
+                                        "start_date": t_start.strftime("%Y-%m-%d"),
+                                        "end_date": t_end.strftime("%Y-%m-%d"),
+                                        "errors": {}
                                     }
+                                    info["updated_at"] = datetime.now().isoformat()
                                     save_single_milestone(mid, info)
                                     st.rerun()
                                 else:
-                                    st.error("Error Name is required.")
+                                    st.error("Task Name is required.")
+
+                # ── Milestone-Level Errors (Issues) ──
+                m_errors = info.get("milestone_errors", {})
+                with st.expander(f"⚠️ Milestone Issues ({len(m_errors)})", expanded=False):
+                    if m_errors:
+                        for e_id, e_info in m_errors.items():
+                            edit_err_key = f"edit_err_{e_id}"
+                            if edit_err_key not in st.session_state: st.session_state[edit_err_key] = False
+
+                            if st.session_state[edit_err_key]:
+                                with st.form(key=f"form_edit_err_{e_id}"):
+                                    ee_name = st.text_input("Issue Name", value=e_info.get("error_name"))
+                                    ee_desc = st.text_area("Description", value=e_info.get("description"))
+                                    eec1, eec2 = st.columns(2)
+                                    ee_time = eec1.text_input("Time Impact", value=e_info.get("time_variance"))
+                                    ee_check = eec2.text_input("Check Point", value=e_info.get("checkpoint"))
+                                    
+                                    # Multiselect for tasks
+                                    sorted_task_list = sorted(m_tasks.items(), key=lambda x: x[1].get("start_date", ""))
+                                    task_opts = {f"{t_info['name']} ({t_info.get('topic')})": tid for tid, t_info in sorted_task_list}
+                                    current_tasks = [f"{m_tasks[tid]['name']} ({m_tasks[tid].get('topic')})" for tid in e_info.get("task_ids", []) if tid in m_tasks]
+                                    ee_tasks = st.multiselect("Affected Tasks", list(task_opts.keys()), default=current_tasks)
+                                    
+                                    ef_col1, ef_col2 = st.columns(2)
+                                    if ef_col1.form_submit_button("💾 Update Issue"):
+                                        info["milestone_errors"][e_id].update({
+                                            "error_name": ee_name,
+                                            "description": ee_desc,
+                                            "time_variance": ee_time,
+                                            "checkpoint": ee_check,
+                                            "task_ids": [task_opts[tn] for tn in ee_tasks]
+                                        })
+                                        save_single_milestone(mid, info)
+                                        st.session_state[edit_err_key] = False
+                                        st.rerun()
+                                    if ef_col2.form_submit_button("Cancel"):
+                                        st.session_state[edit_err_key] = False
+                                        st.rerun()
+                            else:
+                                ec1, ec2, ec3, ec4 = st.columns([5, 2, 1, 1])
+                                is_err_done = ec2.checkbox("Resolved", value=e_info.get("completed", False), key=f"edone_{e_id}")
+                                if is_err_done != e_info.get("completed", False):
+                                    info["milestone_errors"][e_id]["completed"] = is_err_done
+                                    info["updated_at"] = datetime.now().isoformat()
+                                    save_single_milestone(mid, info)
+                                    st.rerun()
+                                    
+                                linked_tasks = [m_tasks[tid]["name"] for tid in e_info.get("task_ids", []) if tid in m_tasks]
+                                ec1.markdown(f"**{e_info.get('error_name')}**")
+                                if linked_tasks:
+                                    ec1.caption(f"Linked to: {', '.join(linked_tasks)}")
+                                if e_info.get("description"):
+                                    ec1.write(e_info.get("description"))
+                                
+                                if ec3.button("✏️", key=f"btn_edit_e_{e_id}"):
+                                    st.session_state[edit_err_key] = True
+                                    st.rerun()
+                                if ec4.button("🗑️", key=f"btn_del_e_{e_id}"):
+                                    del info["milestone_errors"][e_id]
+                                    info["updated_at"] = datetime.now().isoformat()
+                                    save_single_milestone(mid, info)
+                                    st.rerun()
+                                st.divider()
+                    else:
+                        st.info("No issues recorded for this milestone.")
+
+                    st.divider()
+                    with st.expander("➕ Add New Error / Issue", expanded=False):
+                        if not m_tasks:
+                            st.warning("Please add a task first before adding an error.")
+                        else:
+                            with st.form(key=f"form_add_error_{mid}"):
+                                sorted_task_list = sorted(m_tasks.items(), key=lambda x: x[1].get("start_date", ""))
+                                task_options = {f"{t_info['name']} ({t_info.get('topic')})": t_id for t_id, t_info in sorted_task_list}
+                                sel_task_names = st.multiselect("Select Affected Tasks", list(task_options.keys()))
+                                
+                                e_name = st.text_input("Error / Issue Name")
+                                e_desc = st.text_area("Description")
+                                ec1, ec2 = st.columns(2)
+                                e_time = ec1.text_input("Time Impact (e.g., +2 Hrs)", value="0")
+                                e_check = ec2.text_input("Check Point")
+                                
+                                if st.form_submit_button("💾 Save Error", use_container_width=True):
+                                    if e_name and sel_task_names:
+                                        sel_task_ids = [task_options[name] for name in sel_task_names]
+                                        new_e_id = str(uuid.uuid4())
+                                        if "milestone_errors" not in info: info["milestone_errors"] = {}
+                                        info["milestone_errors"][new_e_id] = {
+                                            "error_name": e_name,
+                                            "description": e_desc,
+                                            "time_variance": e_time,
+                                            "checkpoint": e_check,
+                                            "task_ids": sel_task_ids,
+                                            "completed": False
+                                        }
+                                        info["updated_at"] = datetime.now().isoformat()
+                                        save_single_milestone(mid, info)
+                                        st.rerun()
+                                    elif not sel_task_names:
+                                        st.error("Please select at least one task.")
+                                    else:
+                                        st.error("Error Name is required.")
             
             st.divider()
 
 
     if completed_mils:
         with st.expander("✅ Show Completed Milestones", expanded=False):
-            for mid, info in completed_mils.items():
+            for mid, info in completed_mils:
                 st.markdown(f"**{mid}** - {info.get('project_context')} (Completed)")
                 if st.button("Undo Completion", key=f"undo_{mid}"):
                     info["completed"] = False
+                    info["updated_at"] = datetime.now().isoformat()
                     save_single_milestone(mid, info)
                     st.rerun()
 

@@ -77,11 +77,19 @@ def build_project_topic_registry(df, milestones, notes, base_projects, base_topi
     all_projects = sorted(list(projects_found))
     
     # Registry as dict[str, list[str]]
-    registry = {p: sorted(list(topic_mapping[p])) for p in all_projects}
+    registry = {}
+    for p in all_projects:
+        ts = sorted(list(topic_mapping[p]))
+        # Filter out "All Topics" for all projects
+        ts = [t for t in ts if t not in ["All Topics", "All Topic"]]
+        registry[p] = ts
 
     # Global topics list (for filters etc)
     all_topics_global = set(base_topics)
     for ts in topic_mapping.values():
         all_topics_global.update(ts)
+    
+    # Filter out "All Topics" from global list as well
+    final_topics = [t for t in all_topics_global if t not in ["All Topics", "All Topic"]]
 
-    return all_projects, sorted(list(all_topics_global)), registry
+    return all_projects, sorted(final_topics), registry

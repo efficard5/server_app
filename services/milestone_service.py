@@ -91,19 +91,58 @@ def get_planned_topic_adjustments(
     if not project_name:
         return adjustments
     clean_target = str(project_name).strip()
+    
     for mil_info in milestones.values():
         milestone_project = str(mil_info.get("project_context", "")).strip()
         if milestone_project != clean_target:
             if milestone_project not in clean_target and clean_target not in milestone_project:
                 continue
-        if not mil_info.get("completed", False):
-            continue
-        for topic, increase in get_milestone_topic_increases(mil_info).items():
-            if increase <= 0:
+        
+        milestone_is_done = bool(mil_info.get("completed", False))
+        m_tasks = mil_info.get("tasks", {})
+        m_errors = mil_info.get("milestone_errors", {})
+        topic_inc = get_milestone_topic_increases(mil_info)
+        
+        for t_name, total_increase in topic_inc.items():
+            if total_increase <= 0:
                 continue
-            if topic == "All Topics":
-                for pt in base_topics:
-                    adjustments[pt] = adjustments.get(pt, 0.0) + float(increase)
+            
+            # 1. Identify relevant tasks for this topic
+            relevant_task_ids = []
+            if t_name == "All Topics":
+                relevant_task_ids = list(m_tasks.keys())
             else:
-                adjustments[topic] = adjustments.get(topic, 0.0) + float(increase)
+                relevant_task_ids = [tid for tid, t in m_tasks.items() if t.get("topic") == t_name]
+            
+            # 2. Identify unique errors linked to these tasks
+            relevant_error_ids = set()
+            for eid, einfo in m_errors.items():
+                task_ids_for_error = einfo.get("task_ids", [])
+                # If error is linked to ANY of the relevant tasks, it counts for this topic
+                if any(tid in relevant_task_ids for tid in task_ids_for_error):
+                    relevant_error_ids.add(eid)
+                # Special case: If topic is "All Topics", all errors count? 
+                # (handled by relevant_task_ids containing all keys)
+            
+            # 3. Calculate actual increase for this topic
+            actual_increase = 0.0
+            total_items = len(relevant_task_ids) + len(relevant_error_ids)
+            
+            if total_items > 0:
+                completed_tasks = sum(1 for tid in relevant_task_ids if m_tasks[tid].get("completed", False))
+                completed_errors = sum(1 for eid in relevant_error_ids if m_errors[eid].get("completed", False))
+                
+                actual_increase = ((completed_tasks + completed_errors) / total_items) * float(total_increase)
+            else:
+                # Fallback to milestone overall completion if no specific tasks or errors
+                if milestone_is_done:
+                    actual_increase = float(total_increase)
+            
+            # Apply to adjustments dict
+            if t_name == "All Topics":
+                for pt in base_topics:
+                    adjustments[pt] = adjustments.get(pt, 0.0) + actual_increase
+            else:
+                adjustments[t_name] = adjustments.get(t_name, 0.0) + actual_increase
+                
     return adjustments
