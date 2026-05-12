@@ -32,10 +32,15 @@ def render(ctx: dict) -> None:
     if not is_admin:
         user_df = user_df[user_df["responsible_person"] == current_user]
     
+    today_str = datetime.now().strftime("%Y-%m-%d")
     existing_dates = sorted([str(d) for d in user_df["date"].unique()], reverse=True)
     date_options = ["All Dates"] + existing_dates + ["➕ Add New Date"]
     
-    selected_option = f1.selectbox("📅 Assigned Date Selection", date_options)
+    default_date_idx = 0
+    if today_str in existing_dates:
+        default_date_idx = date_options.index(today_str)
+    
+    selected_option = f1.selectbox("📅 Assigned Date Selection", date_options, index=default_date_idx)
     
     # Handle "Add New Date" logic
     final_selected_date = selected_option
@@ -105,8 +110,12 @@ def render(ctx: dict) -> None:
     # Reindex to ensure all columns are present (fills missing with empty string)
     editor_df = editor_df.reindex(columns=final_cols, fill_value="")
 
-    # Add explicit Delete checkbox column as the first column
+    # Add explicit Delete and Unplanned checklist columns
     editor_df.insert(0, "Delete", False)
+    # Handle unplanned_checklist if it exists in data, else default to False
+    unplanned_vals = editor_df["unplanned_checklist"] if "unplanned_checklist" in editor_df.columns else False
+    editor_df.insert(1, "unplanned checklist", unplanned_vals)
+    
     # Ensure a clean integer index for hide_index to work correctly
     editor_df = editor_df.reset_index(drop=True)
 
@@ -122,6 +131,7 @@ def render(ctx: dict) -> None:
             placeholder[col] = ""
         editor_df = pd.DataFrame([placeholder])
         editor_df.insert(0, "Delete", False)
+        editor_df.insert(1, "unplanned checklist", False)
         editor_df = editor_df.reset_index(drop=True)
 
     # Render the editable table
@@ -134,7 +144,8 @@ def render(ctx: dict) -> None:
         key=f"editor_{final_selected_date}_{selected_person}_{st.session_state.daily_save_count}",
         column_config={
             "Delete": st.column_config.CheckboxColumn("🗑️", default=False),
-            "task_id": st.column_config.TextColumn("ID", disabled=True),
+            "unplanned checklist": st.column_config.CheckboxColumn("📝 Unplanned", default=False),
+            "task_id": st.column_config.NumberColumn("ID", disabled=True, format="%d"),
             "date": st.column_config.DateColumn("Date", required=True),
             "responsible_person": st.column_config.SelectboxColumn("Responsible", options=employees, required=True),
         }
@@ -179,6 +190,7 @@ def render(ctx: dict) -> None:
                 "task_id": None if is_new else str(task_id),
                 "date": d,
                 "responsible_person": p,
+                "unplanned_checklist": bool(row.get("unplanned checklist", False))
             }
             # Add any extra dynamic columns
             for col in active_cols:

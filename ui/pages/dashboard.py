@@ -17,7 +17,7 @@ def render(ctx: dict) -> None:
     projects = ctx["projects"]
     registry = ctx["registry"]
     
-    st.title("📊 R&D Project Overview & Analytics")
+    st.title("R&D Project Overview & Analytics")
     
     # --- UI Component: Topic Files Helper ---
     def render_topic_files(t_proj, t_topic, btn_key=""):
@@ -98,7 +98,14 @@ def render(ctx: dict) -> None:
         """)
         return
 
-    selected_project = st.selectbox("🌐 Select View Context (Project Filter)", projects)
+    # Find index of "Truck unloading Project" for default selection
+    default_ix = 0
+    if "Truck unloading Project" in projects:
+        default_ix = projects.index("Truck unloading Project")
+    elif "Truck Unloading Project" in projects:
+        default_ix = projects.index("Truck Unloading Project")
+        
+    selected_project = st.selectbox("🌐 Select View Context (Project Filter)", projects, index=default_ix)
     st.divider()
 
     # 2. Filter data
@@ -252,7 +259,7 @@ def render(ctx: dict) -> None:
                 time.sleep(0.5)
                 st.rerun()
         else:
-            with st.expander("⚠️ Project Issues", expanded=False):
+            with st.expander("Project Issues", expanded=False):
                 st.markdown(format_bullet_markdown(proj_notes.get("Project_Issues", "")))
-            with st.expander("🚀 Further Plans", expanded=False):
+            with st.expander("Further Plans", expanded=False):
                 st.markdown(format_bullet_markdown(proj_notes.get("Project_Plans", "")))

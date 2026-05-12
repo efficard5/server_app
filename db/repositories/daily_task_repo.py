@@ -5,6 +5,10 @@ import pandas as pd
 from uuid import uuid4
 import numpy as np
 
+def _ui_col_to_db_col(ui_col):
+    """Standardize UI column names to database-safe identifiers."""
+    return ui_col.lower().replace(" ", "_").replace("/", "_").replace("-", "_").replace("%", "pct")
+
 def sync_db_columns(cols):
     """Ensure the daily_tasks table has physical columns for all active fields."""
     from db.base import get_cursor
@@ -13,7 +17,7 @@ def sync_db_columns(cols):
         existing = [r[0].lower() for r in cur.fetchall()]
     
     for col in cols:
-        db_col = col.lower().replace(" ", "_").replace("/", "_").replace("-", "_")
+        db_col = _ui_col_to_db_col(col)
         if db_col not in existing and db_col not in ["task_id", "date", "responsible_person", "extra_data", "delete"]:
             try:
                 execute_query(f'ALTER TABLE daily_tasks ADD COLUMN "{db_col}" TEXT')
@@ -37,7 +41,7 @@ def get_all_daily_tasks():
     # Map DB names back to UI names
     active_cols = get_task_sheet_columns()
     for ui_col in active_cols:
-        db_col = ui_col.lower().replace(" ", "_").replace("/", "_").replace("-", "_")
+        db_col = _ui_col_to_db_col(ui_col)
         if db_col in df.columns and ui_col != db_col:
             df.rename(columns={db_col: ui_col}, inplace=True)
             
@@ -68,7 +72,7 @@ def get_daily_tasks_by_date(assigned_date):
     
     active_cols = get_task_sheet_columns()
     for ui_col in active_cols:
-        db_col = ui_col.lower().replace(" ", "_").replace("/", "_").replace("-", "_")
+        db_col = _ui_col_to_db_col(ui_col)
         if db_col in df.columns and ui_col != db_col:
             df.rename(columns={db_col: ui_col}, inplace=True)
             
@@ -83,9 +87,8 @@ def upsert_daily_tasks_from_df(df: pd.DataFrame):
 
     for _, row in df.iterrows():
         tid = row.get("task_id")
-        if pd.isna(tid) or str(tid).strip() in ["", "NEW", "nan"]:
-            tid = str(uuid4())
-            
+        is_new = pd.isna(tid) or str(tid).strip() in ["", "NEW", "nan"]
+        
         new_date = row.get("date")
         if hasattr(new_date, "strftime"): new_date = new_date.strftime("%Y-%m-%d")
         
@@ -94,37 +97,51 @@ def upsert_daily_tasks_from_df(df: pd.DataFrame):
 
         # Prepare dynamic UPSERT
         update_map = {
-            "task_id": tid,
             "date": new_date,
             "responsible_person": person
         }
+        if not is_new:
+            update_map["task_id"] = int(tid)
         
         # Add values for real columns
         extra_json = {}
         for ui_col in df.columns:
             if ui_col in ["task_id", "date", "responsible_person", "Delete"]: continue
             
-            val = str(row[ui_col]) if not pd.isna(row[ui_col]) else ""
-            db_col = ui_col.lower().replace(" ", "_").replace("/", "_").replace("-", "_")
+            val = row[ui_col]
+            if pd.isna(val): val = ""
+            db_col = _ui_col_to_db_col(ui_col)
             
             if db_col in db_cols:
+                # Handle boolean types specifically if needed, but the current schema uses TEXT mostly
                 update_map[db_col] = val
             else:
-                extra_json[ui_col] = val
+                extra_json[ui_col] = str(val)
         
         update_map["extra_data"] = json.dumps(extra_json)
         
         cols = list(update_map.keys())
         vals = list(update_map.values())
-        placeholders = ", ".join(["%s"] * len(vals))
-        set_clause = ", ".join([f"{c} = EXCLUDED.{c}" for c in cols if c != "task_id"])
         
-        query = f"""
-            INSERT INTO daily_tasks ({", ".join(cols)})
-            VALUES ({placeholders})
-            ON CONFLICT (task_id) DO UPDATE SET {set_clause}
-        """
-        execute_query(query, vals)
+        quoted_cols = [f'"{c}"' for c in cols]
+        placeholders = ", ".join(["%s"] * len(vals))
+        
+        if is_new:
+            # Simple INSERT for new rows
+            query = f"""
+                INSERT INTO daily_tasks ({", ".join(quoted_cols)})
+                VALUES ({placeholders})
+            """
+            execute_query(query, vals)
+        else:
+            # UPSERT for existing rows
+            set_clause = ", ".join([f'"{c}" = EXCLUDED."{c}"' for c in cols if c != "task_id"])
+            query = f"""
+                INSERT INTO daily_tasks ({", ".join(quoted_cols)})
+                VALUES ({placeholders})
+                ON CONFLICT (task_id) DO UPDATE SET {set_clause}
+            """
+            execute_query(query, vals)
 
 def get_task_sheet_columns():
     query = "SELECT value FROM app_settings WHERE key = 'daily_task_columns'"

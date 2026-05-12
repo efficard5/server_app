@@ -85,9 +85,9 @@ if st.session_state.workspace_page is None:
 
 # ── 7. Sidebar navigation ─────────────────────────────────────────────────────
 with st.sidebar:
-    st.title("🏭 PMO Navigation")
+    st.title("PMO Navigation")
     st.caption(f"Logged in as: **{st.session_state.auth_name}** ({st.session_state.role})")
-    if st.button("🚪 Logout/Change View"):
+    if st.button("Logout/Change View"):
         st.session_state.workspace_page = None
         st.rerun()
     st.divider()

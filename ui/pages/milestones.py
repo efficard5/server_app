@@ -20,7 +20,7 @@ def render(ctx: dict) -> None:
     projects = ctx["projects"]
     topics = ctx["topics"]
     
-    st.title("🚩 Planned Milestones")
+    st.title("Planned Milestones")
     st.markdown("Manage major milestones and their progress contributions.")
 
     # --- 1. GANTT CHART VIEW ---
@@ -129,7 +129,7 @@ def render(ctx: dict) -> None:
     for mid, info in active_mils.items():
         with st.container():
             h1, h2, h3, h4 = st.columns([5, 1.2, 0.9, 0.9])
-            h1.markdown(f"### 🎯 {mid}")
+            h1.markdown(f"### {mid}")
             
             if h2.checkbox("Completed", value=False, key=f"done_{mid}"):
                 info["completed"] = True
@@ -222,7 +222,9 @@ def render(ctx: dict) -> None:
                 
                 with st.expander("📋 Manage Tasks", expanded=False):
                     if m_tasks:
-                        for t_id, t_info in m_tasks.items():
+                        # Sort tasks by start_date
+                        sorted_tasks = sorted(m_tasks.items(), key=lambda x: x[1].get("start_date", ""))
+                        for t_id, t_info in sorted_tasks:
                             edit_task_key = f"edit_task_{t_id}"
                             if edit_task_key not in st.session_state: st.session_state[edit_task_key] = False
                             
@@ -305,7 +307,9 @@ def render(ctx: dict) -> None:
                         st.warning("Please add a task first before adding an error.")
                     else:
                         with st.form(key=f"form_add_error_{mid}"):
-                            task_options = {t_info["name"]: t_id for t_id, t_info in m_tasks.items()}
+                            # Sort tasks by date for the selection dropdown
+                            sorted_task_list = sorted(m_tasks.items(), key=lambda x: x[1].get("start_date", ""))
+                            task_options = {t_info["name"]: t_id for t_id, t_info in sorted_task_list}
                             sel_task_name = st.selectbox("Select Task", list(task_options.keys()))
                             
                             e_name = st.text_input("Error / Issue Name")
