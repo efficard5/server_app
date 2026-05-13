@@ -81,6 +81,12 @@ if st.session_state.workspace_page is None:
     if go_col2.button("Task Sheet", use_container_width=True):
         st.session_state.workspace_page = "Task Sheet"
         st.rerun()
+    
+    # ── 6.1 Contribution Graph (LeetCode style) ────────────────────────────────
+    st.divider()
+    from ui.components.contribution_graph import render_contribution_graph
+    render_contribution_graph(ctx)
+    
     st.stop()
 
 # ── 7. Sidebar navigation ─────────────────────────────────────────────────────

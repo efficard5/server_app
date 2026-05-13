@@ -129,10 +129,17 @@ def get_planned_topic_adjustments(
             total_items = len(relevant_task_ids) + len(relevant_error_ids)
             
             if total_items > 0:
-                completed_tasks = sum(1 for tid in relevant_task_ids if m_tasks[tid].get("completed", False))
+                # Sum partial progress for tasks (0-100%)
+                task_progress_sum = 0.0
+                for tid in relevant_task_ids:
+                    t_info = m_tasks[tid]
+                    # Use completion_pct if available, fallback to 100 if completed is True
+                    pct = float(t_info.get("completion_pct", 100.0 if t_info.get("completed", False) else 0.0))
+                    task_progress_sum += (pct / 100.0)
+                
                 completed_errors = sum(1 for eid in relevant_error_ids if m_errors[eid].get("completed", False))
                 
-                actual_increase = ((completed_tasks + completed_errors) / total_items) * float(total_increase)
+                actual_increase = ((task_progress_sum + completed_errors) / total_items) * float(total_increase)
             else:
                 # Fallback to milestone overall completion if no specific tasks or errors
                 if milestone_is_done:

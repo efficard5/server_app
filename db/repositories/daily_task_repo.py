@@ -16,7 +16,7 @@ def sync_db_columns(cols):
         cur.execute("SELECT column_name FROM information_schema.columns WHERE table_name = 'daily_tasks'")
         existing = [r[0].lower() for r in cur.fetchall()]
     
-    for col in cols:
+    for col in cols + ["completed_checkpoint", "ms_ref", "ms_task_ref"]:
         db_col = _ui_col_to_db_col(col)
         if db_col not in existing and db_col not in ["task_id", "date", "responsible_person", "extra_data", "delete"]:
             try:

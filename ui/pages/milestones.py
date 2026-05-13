@@ -268,6 +268,7 @@ def render(ctx: dict) -> None:
                                             "description": et_desc,
                                             "topic": et_topic,
                                             "completed": t_info.get("completed", False),
+                                            "completion_pct": t_info.get("completion_pct", 100.0 if t_info.get("completed", False) else 0.0),
                                             "start_date": et_start.strftime("%Y-%m-%d"),
                                             "end_date": et_end.strftime("%Y-%m-%d"),
                                             "errors": t_info.get("errors", {})
@@ -280,12 +281,28 @@ def render(ctx: dict) -> None:
                                         st.session_state[edit_task_key] = False
                                         st.rerun()
                             else:
-                                tc1, tc2, tc3, tc4 = st.columns([6, 2, 1, 1])
-                                is_done = tc2.checkbox("Done", value=t_info.get("completed", False), key=f"tdone_{t_id}")
-                                if is_done != t_info.get("completed", False):
-                                    info["tasks"][t_id]["completed"] = is_done
+                                tc1, tc2, tc3, tc4, tc5 = st.columns([4, 2, 2, 1, 1])
+                                # Progress Percentage Input
+                                cur_pct = float(t_info.get("completion_pct") or (100.0 if t_info.get("completed", False) else 0.0))
+                                new_pct = tc2.number_input("Progress %", value=cur_pct, min_value=0.0, max_value=100.0, step=1.0, key=f"tpct_{t_id}", label_visibility="collapsed")
+                                
+                                # Done Checkbox (Syncs with 100%)
+                                is_done = tc3.checkbox("Done", value=(new_pct >= 100.0), key=f"tdone_{t_id}")
+                                if is_done and new_pct < 100.0: new_pct = 100.0
+                                if not is_done and new_pct >= 100.0: new_pct = 99.0 # or keep as 100 if user explicitly set? 
+                                
+                                if new_pct != cur_pct:
+                                    info["tasks"][t_id]["completion_pct"] = new_pct
+                                    info["tasks"][t_id]["completed"] = (new_pct >= 100.0)
                                     info["updated_at"] = datetime.now().isoformat()
                                     save_single_milestone(mid, info)
+                                    
+                                    # Mirror to Daily Tasks Sheet
+                                    from db.base import execute_query
+                                    execute_query(
+                                        'UPDATE daily_tasks SET completed_checkpoint = %s, actual_pct_completion = %s WHERE ms_ref = %s AND ms_task_ref = %s',
+                                        [str(new_pct >= 100.0), str(new_pct), mid, t_id]
+                                    )
                                     st.rerun()
 
                                 t_label = f"**{t_info.get('name')}**"
@@ -329,6 +346,7 @@ def render(ctx: dict) -> None:
                                         "name": t_name,
                                         "description": t_desc,
                                         "topic": t_topic,
+                                        "completion_pct": 0.0,
                                         "completed": False,
                                         "start_date": t_start.strftime("%Y-%m-%d"),
                                         "end_date": t_end.strftime("%Y-%m-%d"),
@@ -352,9 +370,7 @@ def render(ctx: dict) -> None:
                                 with st.form(key=f"form_edit_err_{e_id}"):
                                     ee_name = st.text_input("Issue Name", value=e_info.get("error_name"))
                                     ee_desc = st.text_area("Description", value=e_info.get("description"))
-                                    eec1, eec2 = st.columns(2)
-                                    ee_time = eec1.text_input("Time Impact", value=e_info.get("time_variance"))
-                                    ee_check = eec2.text_input("Check Point", value=e_info.get("checkpoint"))
+                                    ee_time = st.text_input("Time Impact", value=e_info.get("time_variance"))
                                     
                                     # Multiselect for tasks
                                     sorted_task_list = sorted(m_tasks.items(), key=lambda x: x[1].get("start_date", ""))
@@ -368,7 +384,6 @@ def render(ctx: dict) -> None:
                                             "error_name": ee_name,
                                             "description": ee_desc,
                                             "time_variance": ee_time,
-                                            "checkpoint": ee_check,
                                             "task_ids": [task_opts[tn] for tn in ee_tasks]
                                         })
                                         save_single_milestone(mid, info)
@@ -417,9 +432,7 @@ def render(ctx: dict) -> None:
                                 
                                 e_name = st.text_input("Error / Issue Name")
                                 e_desc = st.text_area("Description")
-                                ec1, ec2 = st.columns(2)
-                                e_time = ec1.text_input("Time Impact (e.g., +2 Hrs)", value="0")
-                                e_check = ec2.text_input("Check Point")
+                                e_time = st.text_input("Time Impact (e.g., +2 Hrs)", value="0")
                                 
                                 if st.form_submit_button("💾 Save Error", use_container_width=True):
                                     if e_name and sel_task_names:
@@ -430,7 +443,6 @@ def render(ctx: dict) -> None:
                                             "error_name": e_name,
                                             "description": e_desc,
                                             "time_variance": e_time,
-                                            "checkpoint": e_check,
                                             "task_ids": sel_task_ids,
                                             "completed": False
                                         }
