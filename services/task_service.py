@@ -7,6 +7,7 @@ No Drive, no Excel files.
 """
 
 import pandas as pd
+import streamlit as st
 
 from db.repositories.task_repo import (
     get_all_tasks,
@@ -25,6 +26,7 @@ from db.repositories.daily_task_repo import (
 
 # ── Gantt tasks ───────────────────────────────────────────────────────────────
 
+@st.cache_data(ttl=60)
 def load_data() -> pd.DataFrame:
     """Return all tasks as a DataFrame with app-standard column names."""
     return get_all_tasks()
@@ -32,35 +34,37 @@ def load_data() -> pd.DataFrame:
 
 def save_task(task: dict) -> int:
     """Insert a new task row. Returns new id."""
+    load_data.clear()
     return insert_task(task)
 
 
 def update_task_row(task_id: int, task: dict) -> None:
+    load_data.clear()
     update_task(task_id, task)
 
 
 def delete_task_row(task_id: int) -> None:
+    load_data.clear()
     delete_task(task_id)
 
 
 def bulk_replace_tasks(df: pd.DataFrame) -> None:
     """Truncate and reload all tasks from a DataFrame (migration use)."""
+    load_data.clear()
     upsert_tasks_from_df(df)
 
 
 # ── Daily tasks ───────────────────────────────────────────────────────────────
 
+@st.cache_data(ttl=60)
 def load_daily_task_data() -> pd.DataFrame:
     """Return all daily tasks as a DataFrame."""
     return get_all_daily_tasks()
 
 
-def load_daily_tasks_for_date(assigned_date) -> pd.DataFrame:
-    return get_daily_tasks_by_date(assigned_date)
-
-
 def bulk_replace_daily_tasks(df: pd.DataFrame) -> None:
     """Saves the entire task sheet DataFrame to the database."""
+    load_daily_task_data.clear()
     upsert_daily_tasks_from_df(df)
 
 
@@ -93,8 +97,7 @@ def aggregate_topic_completion(topic_df: pd.DataFrame) -> float:
     """Matches the original logic for incremental topic completion."""
     if topic_df.empty:
         return 0.0
-        
-    # Standardize column name
+
     col = "completion_pct" if "completion_pct" in topic_df.columns else "status"
     if col == "status":
         return 100.0 if any(topic_df["status"] == "Completed") else 0.0
@@ -102,8 +105,7 @@ def aggregate_topic_completion(topic_df: pd.DataFrame) -> float:
     values = pd.to_numeric(topic_df[col], errors="coerce").dropna()
     if values.empty:
         return 0.0
-        
+
     base = float(values.max())
-    # Incremental logic: max value + sum of smaller values (up to 100)
     incremental = float(values[values < base].sum())
     return min(100.0, round(base + incremental, 1))

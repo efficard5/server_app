@@ -8,14 +8,14 @@ from services.task_service import (
     get_daily_task_columns, 
     update_daily_task_columns
 )
-from services.milestone_service import load_planned_milestones, save_single_milestone
+from services.milestone_service import save_single_milestone
 from db.base import execute_query
 import uuid
 
 def render(ctx: dict) -> None:
     st.title("Task Sheet")
     
-    all_daily_df = load_daily_task_data()
+    all_daily_df = ctx["daily_task_df"]
     active_cols = get_daily_task_columns()
     
     # Ensure technical columns exist (runs once per session ideally)
@@ -64,26 +64,14 @@ def render(ctx: dict) -> None:
     st.markdown("### 🔗 Milestone Task Link")
     m_col1, m_col2 = st.columns(2)
     
-    milestones_dict = load_planned_milestones()
+    milestones_dict = ctx["milestones"]
     # Filter active milestones (not completed)
     active_mils = {mid: info for mid, info in milestones_dict.items() if not info.get("completed", False)}
     milestone_options = ["-- Select Milestone --"] + sorted(list(active_mils.keys()))
     
     selected_milestone = m_col1.selectbox("🎯 Select Planned Milestone", milestone_options)
     
-    # --- Sync Milestone Status to Daily Tasks (In-Memory for Display) ---
-    # This ensures the Task Sheet always reflects the latest Milestone status for linked tasks
-    for idx, row in all_daily_df.iterrows():
-        mid = row.get("ms_ref")
-        tid = row.get("ms_task_ref")
-        if mid and pd.notna(mid) and tid and pd.notna(tid):
-            if mid in milestones_dict and tid in milestones_dict[mid].get("tasks", {}):
-                ms_task = milestones_dict[mid]["tasks"][tid]
-                ms_done = bool(ms_task.get("completed", False))
-                ms_pct = float(ms_task.get("completion_pct", 100.0 if ms_done else 0.0))
-                
-                all_daily_df.at[idx, "completed_checkpoint"] = str(ms_done)
-                all_daily_df.at[idx, "Actual % Completion"] = ms_pct
+    # --- Sync Milestone Status (Moved below filtering for efficiency) ---
 
     if selected_milestone != "-- Select Milestone --":
         mil_info = active_mils[selected_milestone]
@@ -203,6 +191,20 @@ def render(ctx: dict) -> None:
     # Filter by person
     if selected_person != "All Employees":
         editor_df = editor_df[editor_df["responsible_person"] == selected_person]
+
+    # --- Sync Milestone Status to Daily Tasks (In-Memory for Display) ---
+    # Only sync filtered rows for performance
+    for idx, row in editor_df.iterrows():
+        mid = row.get("ms_ref")
+        tid = row.get("ms_task_ref")
+        if mid and pd.notna(mid) and tid and pd.notna(tid):
+            if mid in milestones_dict and tid in milestones_dict[mid].get("tasks", {}):
+                ms_task = milestones_dict[mid]["tasks"][tid]
+                ms_done = bool(ms_task.get("completed", False))
+                ms_pct = float(ms_task.get("completion_pct", 100.0 if ms_done else 0.0))
+                
+                editor_df.at[idx, "completed_checkpoint"] = str(ms_done)
+                editor_df.at[idx, "Actual % Completion"] = ms_pct
 
     # Ensure all active columns exist in the DataFrame
     for col in active_cols:
@@ -370,19 +372,19 @@ def render(ctx: dict) -> None:
             bulk_replace_daily_tasks(pd.DataFrame(rows_to_upsert))
             
             # --- Sync completion status back to Planned Milestones ---
+            # Use fresh milestone data (cache was cleared by bulk_replace_daily_tasks)
+            from services.milestone_service import load_planned_milestones
             all_mils = load_planned_milestones()
             updated_mils = set()
             for r in rows_to_upsert:
                 mid = r.get("ms_ref")
                 tid = r.get("ms_task_ref")
-                # Skip if no valid milestone reference
                 if not mid or pd.isna(mid) or not tid or pd.isna(tid):
                     continue
                 
                 done = bool(r.get("completed_checkpoint", False))
                 pct = float(r.get("Actual % Completion") or 0.0)
                 
-                # If 100% was entered, set done to True. If Done was checked, set pct to 100.
                 if pct >= 100.0: done = True
                 if done and pct < 100.0: pct = 100.0
                 

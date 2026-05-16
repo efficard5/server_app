@@ -4,6 +4,7 @@ services/milestone_service.py
 Milestone business logic — reads/writes PostgreSQL via milestone_repo.
 """
 
+import streamlit as st
 from db.repositories.milestone_repo import (
     get_all_milestones,
     save_milestone,
@@ -12,21 +13,25 @@ from db.repositories.milestone_repo import (
 )
 
 
+@st.cache_data(ttl=60)
 def load_planned_milestones() -> dict:
     return get_all_milestones()
 
 
 def save_planned_milestones(milestones: dict) -> None:
     """Save all milestones (full replace)."""
+    load_planned_milestones.clear()
     save_all_milestones(milestones)
 
 
 def save_single_milestone(milestone_id: str, mil_info: dict) -> None:
     """Save one milestone without touching others."""
+    load_planned_milestones.clear()
     save_milestone(milestone_id, mil_info)
 
 
 def remove_milestone(milestone_id: str) -> None:
+    load_planned_milestones.clear()
     delete_milestone(milestone_id)
 
 
@@ -91,65 +96,54 @@ def get_planned_topic_adjustments(
     if not project_name:
         return adjustments
     clean_target = str(project_name).strip()
-    
+
     for mil_info in milestones.values():
         milestone_project = str(mil_info.get("project_context", "")).strip()
         if milestone_project != clean_target:
             if milestone_project not in clean_target and clean_target not in milestone_project:
                 continue
-        
+
         milestone_is_done = bool(mil_info.get("completed", False))
         m_tasks = mil_info.get("tasks", {})
         m_errors = mil_info.get("milestone_errors", {})
         topic_inc = get_milestone_topic_increases(mil_info)
-        
+
         for t_name, total_increase in topic_inc.items():
             if total_increase <= 0:
                 continue
-            
-            # 1. Identify relevant tasks for this topic
+
             relevant_task_ids = []
             if t_name == "All Topics":
                 relevant_task_ids = list(m_tasks.keys())
             else:
                 relevant_task_ids = [tid for tid, t in m_tasks.items() if t.get("topic") == t_name]
-            
-            # 2. Identify unique errors linked to these tasks
+
             relevant_error_ids = set()
             for eid, einfo in m_errors.items():
                 task_ids_for_error = einfo.get("task_ids", [])
-                # If error is linked to ANY of the relevant tasks, it counts for this topic
                 if any(tid in relevant_task_ids for tid in task_ids_for_error):
                     relevant_error_ids.add(eid)
-                # Special case: If topic is "All Topics", all errors count? 
-                # (handled by relevant_task_ids containing all keys)
-            
-            # 3. Calculate actual increase for this topic
+
             actual_increase = 0.0
             total_items = len(relevant_task_ids) + len(relevant_error_ids)
-            
+
             if total_items > 0:
-                # Sum partial progress for tasks (0-100%)
                 task_progress_sum = 0.0
                 for tid in relevant_task_ids:
                     t_info = m_tasks[tid]
-                    # Use completion_pct if available, fallback to 100 if completed is True
                     pct = float(t_info.get("completion_pct", 100.0 if t_info.get("completed", False) else 0.0))
                     task_progress_sum += (pct / 100.0)
-                
+
                 completed_errors = sum(1 for eid in relevant_error_ids if m_errors[eid].get("completed", False))
-                
                 actual_increase = ((task_progress_sum + completed_errors) / total_items) * float(total_increase)
             else:
-                # Fallback to milestone overall completion if no specific tasks or errors
                 if milestone_is_done:
                     actual_increase = float(total_increase)
-            
-            # Apply to adjustments dict
+
             if t_name == "All Topics":
                 for pt in base_topics:
                     adjustments[pt] = adjustments.get(pt, 0.0) + actual_increase
             else:
                 adjustments[t_name] = adjustments.get(t_name, 0.0) + actual_increase
-                
+
     return adjustments

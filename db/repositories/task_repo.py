@@ -8,7 +8,7 @@ import pandas as pd
 from db.base import execute_query, get_cursor
 
 def get_all_tasks() -> pd.DataFrame:
-    query = "SELECT * FROM tasks ORDER BY project, start_date"
+    query = "SELECT * FROM tasks WHERE is_active = TRUE ORDER BY project, start_date"
     rows = execute_query(query, fetch=True)
     # Get column names
     with get_cursor() as cur:
@@ -17,7 +17,7 @@ def get_all_tasks() -> pd.DataFrame:
     return pd.DataFrame(rows, columns=colnames)
 
 def get_tasks_by_project(project_name: str) -> pd.DataFrame:
-    query = "SELECT * FROM tasks WHERE project = %s ORDER BY start_date"
+    query = "SELECT * FROM tasks WHERE project = %s AND is_active = TRUE ORDER BY start_date"
     rows = execute_query(query, (project_name,), fetch=True)
     with get_cursor() as cur:
         cur.execute("SELECT * FROM tasks LIMIT 0")
@@ -32,13 +32,14 @@ def insert_task(task: dict) -> int:
     return result[0][0]
 
 def update_task(task_id: int, task: dict) -> None:
-    set_clause = ", ".join([f"{k} = %s" for k in task.keys()])
-    query = f"UPDATE tasks SET {set_clause} WHERE id = %s"
-    params = list(task.values()) + [task_id]
-    execute_query(query, params)
+    # Set old row to inactive
+    execute_query("UPDATE tasks SET is_active = FALSE WHERE id = %s", (task_id,))
+    # Insert new row (it will get a new ID, but for versioning this is expected unless we added a group_id)
+    # Note: If tasks have references, changing ID breaks them. This assumes simple flat tasks.
+    insert_task(task)
 
 def delete_task(task_id: int) -> None:
-    execute_query("DELETE FROM tasks WHERE id = %s", (task_id,))
+    execute_query("UPDATE tasks SET is_active = FALSE WHERE id = %s", (task_id,))
 
 def upsert_tasks_from_df(df: pd.DataFrame) -> None:
     """Bulk update tasks from a DataFrame."""

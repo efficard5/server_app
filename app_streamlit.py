@@ -16,9 +16,10 @@ apply_layout()
 from ui.session import init_session_state
 init_session_state()
 
-# Initialize workspace_page state if missing
 if "workspace_page" not in st.session_state:
     st.session_state.workspace_page = None
+if "current_page" not in st.session_state:
+    st.session_state.current_page = "Dashboard"
 
 # ── 3. Config ─────────────────────────────────────────────────────────────────
 from config.settings import load_app_config
@@ -111,7 +112,12 @@ with st.sidebar:
             "Drive Documents",
         ]
     
-    page = st.selectbox("Navigation", nav_options)
+    page = st.selectbox(
+        "Navigation", 
+        nav_options, 
+        index=nav_options.index(st.session_state.current_page) if st.session_state.current_page in nav_options else 0
+    )
+    st.session_state.current_page = page
 
 # ── 8. Page routing ───────────────────────────────────────────────────────────
 from ui.pages import (

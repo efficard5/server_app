@@ -1,6 +1,7 @@
 # ui/pages/milestones.py
 import streamlit as st
 import pandas as pd
+from io import BytesIO
 from services.milestone_service import (
     load_planned_milestones, 
     save_single_milestone, 
@@ -14,6 +15,70 @@ from datetime import datetime, timedelta
 import uuid
 
 
+def _build_active_milestone_task_export_df(milestones: dict) -> pd.DataFrame:
+    rows = []
+
+    for mid, info in milestones.items():
+        if info.get("completed", False):
+            continue
+
+        for task_info in info.get("tasks", {}).values():
+            progress_pct = float(
+                task_info.get("completion_pct")
+                or (100.0 if task_info.get("completed", False) else 0.0)
+            )
+            rows.append(
+                {
+                    "Milestone": mid,
+                    "Project": info.get("project_context", ""),
+                    "Phase": info.get("phase_context") or "",
+                    "Task Name": task_info.get("name", ""),
+                    "Description": task_info.get("description", ""),
+                    "Topic": task_info.get("topic", ""),
+                    "Start Date": task_info.get("start_date", ""),
+                    "End Date": task_info.get("end_date", ""),
+                    "Progress %": progress_pct,
+                    "Status": "Completed" if progress_pct >= 100.0 else "In Progress" if progress_pct > 0 else "Planned",
+                }
+            )
+
+    columns = [
+        "Milestone",
+        "Project",
+        "Phase",
+        "Task Name",
+        "Description",
+        "Topic",
+        "Start Date",
+        "End Date",
+        "Progress %",
+        "Status",
+    ]
+    if not rows:
+        return pd.DataFrame(columns=columns)
+
+    export_df = pd.DataFrame(rows)
+    export_df["_sort_start"] = pd.to_datetime(export_df["Start Date"], errors="coerce")
+    export_df["_sort_end"] = pd.to_datetime(export_df["End Date"], errors="coerce")
+    export_df = (
+        export_df.sort_values(
+            by=["_sort_start", "_sort_end", "Milestone", "Task Name"],
+            ascending=[True, True, True, True],
+            na_position="last",
+        )
+        .drop(columns=["_sort_start", "_sort_end"])
+        .reset_index(drop=True)
+    )
+    return export_df[columns]
+
+
+def _build_excel_file(df: pd.DataFrame) -> bytes:
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        df.to_excel(writer, index=False, sheet_name="Milestone Tasks")
+    output.seek(0)
+    return output.getvalue()
+
 
 def render(ctx: dict) -> None:
     milestones = ctx["milestones"]
@@ -24,10 +89,22 @@ def render(ctx: dict) -> None:
     st.markdown("Manage major milestones and their progress contributions.")
 
     # --- 1. GANTT CHART VIEW ---
-    show_gantt = st.toggle("📊 View Task Timeline (Gantt)", value=False)
+    export_preview_key = "show_milestone_excel_export"
+    if export_preview_key not in st.session_state:
+        st.session_state[export_preview_key] = False
+
+    gantt_col, export_col = st.columns([4, 1.4])
+    show_gantt = gantt_col.toggle("📊 View Task Timeline (Gantt)", value=False)
+    if export_col.button("📤 Export to Excel", key="btn_export_milestone_excel", use_container_width=True):
+        st.session_state[export_preview_key] = True
+
     if show_gantt:
         gantt_data = []
         for mid, info in milestones.items():
+            # ── Skip completed milestones ──────────────────────────────
+            if info.get("completed", False):
+                continue
+
             m_tasks = info.get("tasks", {})
             if not m_tasks:
                 # Fallback to milestone dates if no tasks
@@ -39,7 +116,7 @@ def render(ctx: dict) -> None:
                         Start=start,
                         Finish=end,
                         Milestone=mid,
-                        Status="Completed" if info.get("completed") else "Planned"
+                        Status="Planned"
                     ))
                 continue
             
@@ -52,7 +129,7 @@ def render(ctx: dict) -> None:
                     Start=start,
                     Finish=end,
                     Milestone=mid,
-                    Status="Completed" if info.get("completed") else "Planned"
+                    Status="In Progress" if float(tinfo.get("completion_pct", 0) or 0) > 0 else "Planned"
                 ))
         
         if gantt_data:
@@ -61,14 +138,33 @@ def render(ctx: dict) -> None:
             df_gantt['Start'] = pd.to_datetime(df_gantt['Start'])
             df_gantt = df_gantt.sort_values(by='Start')
             
-            fig_gantt = px.timeline(df_gantt, x_start="Start", x_end="Finish", y="Task", color="Status", 
-                                    hover_data=["Milestone"],
-                                    color_discrete_map={"Completed": "#2ecc71", "Planned": "#3498db"},
-                                    title="Milestone Task Timeline")
+            fig_gantt = px.timeline(df_gantt, x_start="Start", x_end="Finish", y="Task", color="Milestone", 
+                                    hover_data=["Milestone", "Status"],
+                                    title="Active Milestone Task Timeline")
             fig_gantt.update_yaxes(autorange="reversed")
             st.plotly_chart(fig_gantt, use_container_width=True)
         else:
-            st.info("No tasks with dates found to show on Gantt.")
+            st.info("No active milestones with tasks found to show on Gantt.")
+
+    if st.session_state[export_preview_key]:
+        export_df = _build_active_milestone_task_export_df(milestones)
+        with st.expander("📄 Planned Milestone Task Export", expanded=True):
+            if export_df.empty:
+                st.info("No active milestone tasks are available to export.")
+            else:
+                st.dataframe(export_df, use_container_width=True, hide_index=True)
+                st.download_button(
+                    "⬇️ Download Excel",
+                    data=_build_excel_file(export_df),
+                    file_name=f"planned_milestone_tasks_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key="download_planned_milestone_excel",
+                    use_container_width=True,
+                )
+
+            if st.button("Hide Export Preview", key="hide_milestone_export_preview", use_container_width=True):
+                st.session_state[export_preview_key] = False
+                st.rerun()
     
     st.divider()
 
@@ -81,6 +177,19 @@ def render(ctx: dict) -> None:
         new_m_end = m_row1[3].date_input("To Date", key="nm_end")
         
         new_m_project = st.selectbox("Project Context", projects, key="nm_project")
+        
+        # Load Phases for this project
+        notes_db = ctx.get("notes_db", {})
+        proj_notes = notes_db.get(new_m_project, {})
+        phases = {}
+        try:
+            phases = json.loads(proj_notes.get("Phases", "{}"))
+        except:
+            phases = {}
+        
+        phase_list = ["-- No Phase --"] + list(phases.keys())
+        new_m_phase = st.selectbox("🎯 Assign to Phase / Focus Area", phase_list, key="nm_phase")
+        
         new_m_desc = st.text_area("Description / Milestone Strategy", key="nm_desc")
         
         # Topic Progress Increases
@@ -108,6 +217,7 @@ def render(ctx: dict) -> None:
                     "from_date": new_m_start.strftime("%Y-%m-%d"),
                     "to_date": new_m_end.strftime("%Y-%m-%d"),
                     "completed": False,
+                    "phase_context": new_m_phase if new_m_phase != "-- No Phase --" else None,
                     "progress_increase": nm_topic_increases,
                     "created_at": now_iso,
                     "updated_at": now_iso,
@@ -146,11 +256,30 @@ def render(ctx: dict) -> None:
 
     for mid, info in active_mils:
         with st.container():
-            h1, h2, h3, h4 = st.columns([5, 1.2, 0.9, 0.9])
+            h1, hp, h2, h3, h4 = st.columns([4, 1.5, 1.2, 0.9, 0.9])
             h1.markdown(f"### {mid}")
             
             if h2.checkbox("Completed", value=False, key=f"done_{mid}"):
                 info["completed"] = True
+                info["updated_at"] = datetime.now().isoformat()
+                save_single_milestone(mid, info)
+                st.rerun()
+            
+            # --- Inline Phase Selection (Left of buttons) ---
+            m_proj = info.get("project_context")
+            proj_notes = ctx.get("notes_db", {}).get(m_proj, {})
+            try:
+                m_phases = json.loads(proj_notes.get("Phases", "{}"))
+            except:
+                m_phases = {}
+            m_phase_list = ["-- No Phase --"] + list(m_phases.keys())
+            
+            current_phase = info.get("phase_context", "-- No Phase --")
+            if current_phase not in m_phase_list: m_phase_list.append(current_phase)
+            
+            new_p = hp.selectbox("Phase", m_phase_list, index=m_phase_list.index(current_phase), key=f"phase_sel_{mid}", label_visibility="collapsed")
+            if new_p != current_phase:
+                info["phase_context"] = new_p if new_p != "-- No Phase --" else None
                 info["updated_at"] = datetime.now().isoformat()
                 save_single_milestone(mid, info)
                 st.rerun()
@@ -168,10 +297,20 @@ def render(ctx: dict) -> None:
 
             if st.session_state[edit_key]:
                 # Inline Editor
-                ec1, ec2, ec3 = st.columns([3, 1, 1])
+                ec1, ec2, ec3, ec4 = st.columns([2, 1, 1, 1])
                 e_name = ec1.text_input("Name", value=mid, key=f"en_{mid}")
                 e_time = ec2.number_input("Hours", value=float(info.get("time_needed", 0)), key=f"et_{mid}")
                 e_proj = ec3.selectbox("Project", projects, index=projects.index(info["project_context"]) if info["project_context"] in projects else 0, key=f"ep_{mid}")
+                
+                # Phase Edit in Form
+                e_proj_notes = ctx.get("notes_db", {}).get(e_proj, {})
+                try:
+                    e_phases = json.loads(e_proj_notes.get("Phases", "{}"))
+                except:
+                    e_phases = {}
+                e_phase_list = ["-- No Phase --"] + list(e_phases.keys())
+                e_phase_idx = e_phase_list.index(info.get("phase_context")) if info.get("phase_context") in e_phase_list else 0
+                e_phase = ec4.selectbox("Phase", e_phase_list, index=e_phase_idx, key=f"ee_p_{mid}")
                 
                 ed1, ed2 = st.columns(2)
                 e_start = ed1.date_input("From", value=datetime.strptime(info.get("from_date", "2024-01-01"), "%Y-%m-%d"), key=f"es_{mid}")
@@ -191,6 +330,7 @@ def render(ctx: dict) -> None:
                             "from_date": e_start.strftime("%Y-%m-%d"),
                             "to_date": e_end.strftime("%Y-%m-%d"),
                             "description": e_desc,
+                            "phase_context": e_phase if e_phase != "-- No Phase --" else None,
                             "updated_at": datetime.now().isoformat()
                         })
                         # If name changed, delete old and save new
@@ -466,4 +606,3 @@ def render(ctx: dict) -> None:
                     info["updated_at"] = datetime.now().isoformat()
                     save_single_milestone(mid, info)
                     st.rerun()
-
